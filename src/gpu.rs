@@ -28,8 +28,19 @@ impl GpuMiner {
         let batch_size = batch_size.unwrap_or(DEFAULT_BATCH);
 
         let platform = Platform::default();
-        let device = Device::first(platform)
-            .map_err(|e| eyre!("no OpenCL device found: {e}"))?;
+        
+        // Try to find NVIDIA first, then fall back to any device
+        let device = Device::list(platform, Some(ocl::core::DeviceType::GPU))
+            .map_err(|e| eyre!("no OpenCL devices found: {e}"))?
+            .into_iter()
+            .find(|d| {
+                d.name()
+                    .unwrap_or_default()
+                    .to_lowercase()
+                    .contains("nvidia")
+            })
+            .or_else(|| Device::first(platform).ok())
+            .ok_or_else(|| eyre!("no OpenCL device found"))?;
         let device_name = device.name().unwrap_or_else(|_| "<unknown>".into());
 
         let context = Context::builder()
