@@ -16,12 +16,14 @@ let currentStats = {
   lastUpdate: Date.now()
 };
 
-// Parse miner output
-function parseLine(line) {
-  // Hash rate line: "⚡ 4223747.64 H/s | round     80s | attempts      179470336"
-  const hashRateMatch = line.match(/⚡\s+([\d.,]+)\s+H\/s/);
-  const roundTimeMatch = line.match(/round\s+([\d.]+)s/);
-  const attemptsMatch = line.match(/attempts\s+([\d,]+)/);
+function parseLine(rawLine) {
+  // Handle multiple updates on one line (common with \r)
+  const lines = rawLine.split('\r');
+  const line = lines[lines.length - 1]; // Only parse the latest update
+
+  const hashRateMatch = line.match(/⚡\s*([\d.,]+)\s*H\/s/);
+  const roundTimeMatch = line.match(/round\s*([\d.]+)s/);
+  const attemptsMatch = line.match(/attempts\s*([\d,]+)/);
 
   if (hashRateMatch) {
     currentStats.hashRate = parseFloat(hashRateMatch[1].replace(/,/g, ''));
