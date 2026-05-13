@@ -309,6 +309,23 @@ const dashboardHTML = `<!DOCTYPE html>
 
                 if (data.status && data.status !== 'Initializing...') {
                     addLog(data.status);
+                    
+                    // Notification Logic
+                    if (data.status.includes('Minted successfully!') && !window.lastNotifiedSuccess || window.lastNotifiedSuccess < data.lastSuccess) {
+                        window.lastNotifiedSuccess = data.lastSuccess;
+                        
+                        // Play Sound
+                        const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2013/2013-preview.mp3');
+                        audio.play().catch(e => console.log('Audio play blocked by browser policy until user interacts.'));
+                        
+                        // Browser Alert
+                        if (Notification.permission === 'granted') {
+                            new Notification('🎉 HASH MINTED!', { body: 'Check your wallet, you just found a block!' });
+                        } else if (Notification.permission !== 'denied') {
+                            Notification.requestPermission();
+                        }
+                        alert('🎉 SUCCESS! You successfully minted a HASH token!');
+                    }
                 }
             } catch (e) {
                 console.error('Fetch error:', e);
