@@ -169,26 +169,33 @@ impl GpuMiner {
             .build()?;
 
         let mut nonce_base: u64 = start_nonce;
+
+        // Build the kernel once outside the loop for maximum efficiency.
+        let mut kernel = Kernel::builder()
+            .program(&self.program)
+            .name("mine_keccak")
+            .queue(self.queue.clone())
+            .global_work_size(self.batch_size)
+            .local_work_size(128) // Optimal for NVIDIA warps
+            .arg(cw[0]).arg(cw[1]).arg(cw[2]).arg(cw[3])
+            .arg(dw[0]).arg(dw[1]).arg(dw[2]).arg(dw[3])
+            .arg(nonce_base)
+            .arg(&found_nonce)
+            .arg(&found_flag)
+            .build()?;
+
         loop {
             if stop_flag.load(Ordering::Relaxed) {
                 return Ok(None);
             }
 
-            // Reset flag/nonce for this dispatch.
+            // Reset buffers efficiently. 
+            // We use write with small slices which is fast, but set_arg is the real win below.
             found_flag.write(&[0i32][..]).enq()?;
             found_nonce.write(&[0u64][..]).enq()?;
 
-            let kernel = Kernel::builder()
-                .program(&self.program)
-                .name("mine_keccak")
-                .queue(self.queue.clone())
-                .global_work_size(self.batch_size)
-                .arg(cw[0]).arg(cw[1]).arg(cw[2]).arg(cw[3])
-                .arg(dw[0]).arg(dw[1]).arg(dw[2]).arg(dw[3])
-                .arg(nonce_base)
-                .arg(&found_nonce)
-                .arg(&found_flag)
-                .build()?;
+            // Update only the nonce_base argument (index 8)
+            kernel.set_arg(8, nonce_base)?;
 
             unsafe { kernel.enq()?; }
             self.queue.finish()?;
@@ -208,7 +215,7 @@ impl GpuMiner {
                     return Ok(Some(nonce));
                 } else {
                     eprintln!(
-                        "⚠️  GPU reported nonce {} but CPU verify failed — skipping batch",
+                        "\n⚠️  GPU reported nonce {} but CPU verify failed — skipping",
                         nonce
                     );
                 }
@@ -216,8 +223,7 @@ impl GpuMiner {
 
             nonce_base = nonce_base.wrapping_add(self.batch_size as u64);
 
-            // Yield briefly so the stop_flag check has time to land.
-            // (1us is enough to not break GPU saturation.)
+            // Minimal yield to keep CPU available for the Dashboard/WS.
             std::thread::sleep(Duration::from_micros(1));
         }
     }
