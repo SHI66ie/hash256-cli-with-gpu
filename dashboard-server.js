@@ -70,7 +70,8 @@ function parseLine(rawLine) {
   }
 }
 
-// Start the miner
+let minerOutputBuffer = '';
+
 function startMiner() {
   const minerPath = path.join(__dirname, 'target', 'release', 'hash-miner-rs.exe');
 
@@ -80,30 +81,42 @@ function startMiner() {
       ...process.env,
       PRIVATE_KEY: process.env.PRIVATE_KEY,
       RPC_URL: process.env.RPC_URL,
-      MINER_THREADS: process.env.MINER_THREADS || '8'
+      MINER_THREADS: process.env.MINER_THREADS || '8',
+      GPU: process.env.GPU || '0',
+      GPU_BATCH: process.env.GPU_BATCH || '4194304',
+      PRIORITY_GWEI: process.env.PRIORITY_GWEI || '5'
     },
     cwd: __dirname
   });
 
-  miner.stdout.on('data', (data) => {
-    const lines = data.toString().split('\n');
-    lines.forEach(line => {
-      if (line.trim()) {
-        parseLine(line);
-        console.log('[Miner]', line.trim());
-      }
-    });
-  });
+  const handleData = (data) => {
+    minerOutputBuffer += data.toString();
+    
+    // We want to parse the most complete chunks.
+    // Lines are often updated with \r, so we split by both \n and \r
+    let parts = minerOutputBuffer.split(/[\n\r]+/);
+    
+    // Keep the last potentially incomplete part in the buffer
+    if (minerOutputBuffer.endsWith('\n') || minerOutputBuffer.endsWith('\r')) {
+        minerOutputBuffer = '';
+    } else {
+        minerOutputBuffer = parts.pop();
+    }
 
-  miner.stderr.on('data', (data) => {
-    const lines = data.toString().split('\n');
-    lines.forEach(line => {
+    parts.forEach(line => {
       if (line.trim()) {
         parseLine(line);
-        console.log('[Miner]', line.trim());
+        // Only log to console if it contains important info or is a status line
+        if (line.includes('⚡') || line.includes('SUCCESS') || line.includes('FOUND')) {
+           // Clean up the line for clean console logging
+           console.log('[Miner]', line.trim().replace(/\r/g, ''));
+        }
       }
     });
-  });
+  };
+
+  miner.stdout.on('data', handleData);
+  miner.stderr.on('data', handleData);
 
   miner.on('close', (code) => {
     console.log(`[Dashboard] Miner exited with code ${code}`);
