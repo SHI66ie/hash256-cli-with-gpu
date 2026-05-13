@@ -171,7 +171,7 @@ impl GpuMiner {
         let mut nonce_base: u64 = start_nonce;
 
         // Build the kernel once outside the loop for maximum efficiency.
-        let mut kernel = Kernel::builder()
+        let kernel = Kernel::builder()
             .program(&self.program)
             .name("mine_keccak")
             .queue(self.queue.clone())

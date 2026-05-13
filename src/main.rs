@@ -2,7 +2,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use alloy::network::EthereumWallet;
+use alloy::consensus::BlockHeader;
+use alloy::network::{EthereumWallet, ReceiptResponse};
 use alloy::primitives::{address, keccak256, Address, B256, U256};
 use alloy::providers::{Provider, ProviderBuilder, WsConnect};
 use alloy::signers::local::PrivateKeySigner;
@@ -158,59 +159,10 @@ async fn main() -> Result<()> {
     let miner_address = signer.address();
     let wallet = EthereumWallet::from(signer);
 
-    let rpc_url_str = std::env::var("RPC_URL").unwrap_or_else(|_| DEFAULT_RPC_URL.to_string());
-    
-    // --- Dynamic Provider Setup (WS or HTTP) ---
-    let provider = if rpc_url_str.starts_with("ws") {
-        println!("🌐 Connecting via Websocket for real-time updates...");
-        let ws_connect = WsConnect::new(rpc_url_str);
-        ProviderBuilder::new()
-            .with_recommended_fillers()
-            .wallet(wallet)
-            .on_ws(ws_connect)
-            .await?
-    } else {
-        println!("🌐 Connecting via HTTP (polling mode)...");
-        ProviderBuilder::new()
-            .with_recommended_fillers()
-            .wallet(wallet)
-            .on_http(rpc_url_str.parse()?)
-    };
-
-    let contract = HashToken::new(HASH_CONTRACT_ADDRESS, provider.clone());
-
     let num_threads = std::env::var("MINER_THREADS")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or_else(num_cpus::get);
-
-    println!("🔨 HASH Miner initialized");
-    println!("📍 Miner Address: {}", miner_address);
-    println!("🧵 Worker threads: {}", num_threads);
-
-    // --- Initial info via miningState() ---
-    match contract.miningState().call().await {
-        Ok(s) => {
-            println!("\n📋 Mining State:");
-            println!("   Era: {}", s.era);
-            println!("   Reward: {} (raw, 1e18)", s.reward);
-            println!("   Difficulty: {}", s.difficulty);
-            println!("   Mining minted: {} / {}", s.minted, s.minted + s.remaining);
-            println!("   Current epoch: {}", s.epoch);
-            println!("   Blocks left in epoch: {}", s.epochBlocksLeft);
-        }
-        Err(e) => eprintln!("⚠️  miningState() failed: {e}"),
-    }
-
-    match contract.genesisComplete().call().await {
-        Ok(g) if !g._0 => {
-            return Err(eyre!(
-                "Genesis is not complete yet — mining is closed."
-            ));
-        }
-        Ok(_) => println!("✅ Genesis complete — mining is open"),
-        Err(e) => eprintln!("⚠️  Could not verify genesisComplete: {e}"),
-    }
 
     // --- Optional GPU backend ---
     let gpu_enabled = std::env::var("GPU").ok().as_deref() == Some("1");
@@ -251,16 +203,77 @@ async fn main() -> Result<()> {
         });
     }
 
-    // --- Start real-time block subscription if on WS ---
+    let rpc_url_str = std::env::var("RPC_URL").unwrap_or_else(|_| DEFAULT_RPC_URL.to_string());
+    
+    // --- Dynamic Provider Setup (WS or HTTP) ---
+    if rpc_url_str.starts_with("ws") {
+        println!("🌐 Connecting via Websocket for real-time updates...");
+        let ws_connect = WsConnect::new(rpc_url_str);
+        let provider = ProviderBuilder::new()
+            .with_recommended_fillers()
+            .wallet(wallet)
+            .on_ws(ws_connect)
+            .await?;
+        run_mining_loop(provider, gpu_miner, miner_address, num_threads, shutdown, true).await?;
+    } else {
+        println!("🌐 Connecting via HTTP (polling mode)...");
+        let provider = ProviderBuilder::new()
+            .with_recommended_fillers()
+            .wallet(wallet)
+            .on_http(rpc_url_str.parse()?);
+        run_mining_loop(provider, gpu_miner, miner_address, num_threads, shutdown, false).await?;
+    }
+
+    Ok(())
+}
+
+async fn run_mining_loop<P, T, N>(
+    provider: P,
+    gpu_miner: Option<Arc<gpu::GpuMiner>>,
+    miner_address: Address,
+    num_threads: usize,
+    shutdown: Arc<AtomicBool>,
+    use_ws: bool,
+) -> Result<()> 
+where
+    P: Provider<T, N> + Clone + 'static,
+    T: alloy::transports::Transport + Clone,
+    N: alloy::network::Network,
+{
+    let contract = HashToken::new(HASH_CONTRACT_ADDRESS, provider.clone());
+
+    // --- Initial info via miningState() ---
+    match contract.miningState().call().await {
+        Ok(s) => {
+            println!("\n📋 Mining State:");
+            println!("   Era: {}", s.era);
+            println!("   Reward: {} (raw, 1e18)", s.reward);
+            println!("   Difficulty: {}", s.difficulty);
+            println!("   Mining minted: {} / {}", s.minted, s.minted + s.remaining);
+            println!("   Current epoch: {}", s.epoch);
+            println!("   Blocks left in epoch: {}", s.epochBlocksLeft);
+        }
+        Err(e) => eprintln!("⚠️  miningState() failed: {e}"),
+    }
+
+    match contract.genesisComplete().call().await {
+        Ok(g) if !g._0 => {
+            return Err(eyre!("Genesis is not complete yet — mining is closed."));
+        }
+        Ok(_) => println!("✅ Genesis complete — mining is open"),
+        Err(e) => eprintln!("⚠️  Could not verify genesisComplete: {e}"),
+    }
+
+    // --- Start real-time block subscription if supported ---
     use futures_util::StreamExt;
-    let mut block_stream = if provider.supports_subscriptions() {
+    let mut block_stream = if use_ws {
         match provider.subscribe_blocks().await {
             Ok(sub) => {
                 println!("📡 Subscribed to new blocks for instant epoch switching.");
                 Some(sub.into_stream())
             }
             Err(e) => {
-                eprintln!("⚠️  Failed to subscribe to blocks: {e}. Falling back to polling.");
+                eprintln!("⚠️  Failed to subscribe: {e}. Falling back to polling.");
                 None
             }
         }
@@ -273,7 +286,6 @@ async fn main() -> Result<()> {
     let mut success_count: u64 = 0;
 
     while !shutdown.load(Ordering::Relaxed) {
-        // 1. Get current state
         let block_num = match provider.get_block_number().await {
             Ok(n) => n,
             Err(e) => {
@@ -311,7 +323,6 @@ async fn main() -> Result<()> {
         let stop_flag = Arc::new(AtomicBool::new(false));
         let attempts_counter = Arc::new(AtomicU64::new(0));
 
-        // --- Watchdog & Stats ---
         let watchdog = {
             let stop_flag = Arc::clone(&stop_flag);
             let attempts_counter = Arc::clone(&attempts_counter);
@@ -325,7 +336,6 @@ async fn main() -> Result<()> {
                     if stop_flag.load(Ordering::Relaxed) || shutdown.load(Ordering::Relaxed) {
                         break;
                     }
-
                     if last_print.elapsed() >= STATS_INTERVAL {
                         let total = attempts_counter.load(Ordering::Relaxed);
                         let delta = total.saturating_sub(last_attempts);
@@ -341,26 +351,23 @@ async fn main() -> Result<()> {
             })
         };
 
-        // --- Block Monitor (The instant switcher) ---
         let block_monitor = {
             let stop_flag = Arc::clone(&stop_flag);
             let provider = provider.clone();
             let target_epoch = epoch;
-            let mut stream = block_stream.take(); // Take the stream if it exists
+            let mut stream = block_stream.take();
             
             tokio::spawn(async move {
                 if let Some(mut s) = stream {
                     while let Some(header) = s.next().await {
-                        let bn = header.number;
-                        if bn / EPOCH_BLOCKS != target_epoch {
-                            println!("\n🔄 New block {} -> New Epoch! Restarting...", bn);
+                        if header.number() / EPOCH_BLOCKS != target_epoch {
+                            println!("\n🔄 New Epoch detected! Restarting...");
                             stop_flag.store(true, Ordering::Relaxed);
-                            return Some(s); // Return stream for next round
+                            return Some(s);
                         }
                     }
                     None
                 } else {
-                    // Polling fallback
                     loop {
                         tokio::time::sleep(EPOCH_POLL_INTERVAL).await;
                         if stop_flag.load(Ordering::Relaxed) { break; }
@@ -377,7 +384,6 @@ async fn main() -> Result<()> {
             })
         };
 
-        // --- Mining Execution ---
         let start_nonce_u64: u64 = rand::thread_rng().gen();
         let gpu_m = gpu_miner.clone();
         let stop_f = Arc::clone(&stop_flag);
@@ -391,27 +397,23 @@ async fn main() -> Result<()> {
                     _ => None,
                 };
             }
-            
             run_workers(challenge, difficulty, epoch, U256::from(start_nonce_u64), stop_f, att_c, num_threads)
         }).await?;
 
         stop_flag.store(true, Ordering::Relaxed);
         let _ = watchdog.await;
-        // Put the stream back for the next round
         block_stream = block_monitor.await?;
-        
         session_attempts += attempts_counter.load(Ordering::Relaxed);
         eprintln!();
 
         if let Some(sol) = mining_result {
             println!("🎉 FOUND NONCE: {} (epoch {})", sol.nonce, sol.epoch);
-
-            let priority_gwei: f64 = std::env::var("PRIORITY_GWEI").ok().and_then(|s| s.parse().ok()).unwrap_or(5.0);
-            let max_fee_gwei: f64 = std::env::var("MAX_FEE_GWEI").ok().and_then(|s| s.parse().ok()).unwrap_or(100.0);
+            let p_gwei: f64 = std::env::var("PRIORITY_GWEI").ok().and_then(|s| s.parse().ok()).unwrap_or(5.0);
+            let m_gwei: f64 = std::env::var("MAX_FEE_GWEI").ok().and_then(|s| s.parse().ok()).unwrap_or(100.0);
             
             let mut tx = contract.mine(sol.nonce)
-                .max_priority_fee_per_gas((priority_gwei * 1e9) as u128)
-                .max_fee_per_gas((max_fee_gwei * 1e9) as u128);
+                .max_priority_fee_per_gas((p_gwei * 1e9) as u128)
+                .max_fee_per_gas((m_gwei * 1e9) as u128);
 
             if let Some(g) = std::env::var("GAS_LIMIT_OVERRIDE").ok().and_then(|s| s.parse().ok()) {
                 tx = tx.gas(g);
@@ -422,7 +424,7 @@ async fn main() -> Result<()> {
                     println!("📋 TX: {}", pending.tx_hash());
                     if let Ok(receipt) = pending.with_required_confirmations(1).get_receipt().await {
                         if receipt.status() {
-                            println!("✅ SUCCESS in block {}", receipt.block_number.unwrap_or_default());
+                            println!("✅ SUCCESS in block {}", receipt.block_number().unwrap_or_default());
                             success_count += 1;
                         } else { println!("❌ REVERTED"); }
                     }
@@ -433,11 +435,9 @@ async fn main() -> Result<()> {
     }
 
     let elapsed = session_start.elapsed().as_secs_f64().max(0.001);
-    let rate = session_attempts as f64 / elapsed;
-    println!("\n📊 Final Statistics:");
+    println!("\n📊 Session Summary:");
     println!("   Total Attempts: {session_attempts}");
     println!("   Successful Mints: {success_count}");
-    println!("   Average Hash Rate: {rate:.2} H/s");
-    println!("   Mining Duration: {elapsed:.2} seconds");
+    println!("   Avg Hash Rate: {:.2} H/s", session_attempts as f64 / elapsed);
     Ok(())
 }
