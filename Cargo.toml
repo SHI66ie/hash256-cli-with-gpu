@@ -15,6 +15,8 @@ alloy = { version = "0.8", features = [
     "network",
     "rpc-types-eth",
     "reqwest",
+    "pubsub",
+    "ws",
 ] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
 eyre = "0.6"
@@ -24,6 +26,7 @@ rand = "0.8"
 dotenvy = "0.15"
 ocl = { version = "0.19", optional = true }
 hex = "0.4"
+futures-util = "0.3"
 
 [features]
 default = ["gpu"]
