@@ -36,6 +36,7 @@ __constant ulong RC[24] = {
 };
 
 inline void keccak_f1600(ulong *s) {
+    #pragma unroll 24
     for (int r = 0; r < 24; r++) {
         ulong C0 = s[0] ^ s[5] ^ s[10] ^ s[15] ^ s[20];
         ulong C1 = s[1] ^ s[6] ^ s[11] ^ s[16] ^ s[21];
