@@ -158,6 +158,7 @@ async fn main() -> Result<()> {
     let signer: PrivateKeySigner = key_trimmed.parse()?;
     let miner_address = signer.address();
     let wallet = EthereumWallet::from(signer);
+    println!("👤 Miner address: {}", miner_address);
 
     let num_threads = std::env::var("MINER_THREADS")
         .ok()
