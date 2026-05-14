@@ -316,7 +316,7 @@ where
         };
 
         println!("\n📊 Round start:");
-        println!("   Address: {}", miner_address);
+        println!("TARGET_ADDRESS: {}", miner_address);
         println!("   Block: {}  Epoch: {}", block_num, epoch);
         println!("   Difficulty: {}", difficulty);
         println!("   Challenge: 0x{}", hex_short(challenge.as_slice()));

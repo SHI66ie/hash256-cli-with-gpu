@@ -72,8 +72,11 @@ function parseLine(rawLine) {
   if (batchMatch) currentStats.gpuBatch = parseInt(batchMatch[1]);
 
   // Miner Address
-  const addressMatch = line.match(/(?:Miner address|Address):\s+(0x[a-f0-9]+)/i);
-  if (addressMatch) currentStats.minerAddress = addressMatch[1];
+  const addressMatch = line.match(/(?:Miner address|Address|TARGET_ADDRESS):\s+(0x[a-f0-9]+)/i);
+  if (addressMatch) {
+    currentStats.minerAddress = addressMatch[1];
+    console.log('[Dashboard] Parsed Miner Address:', addressMatch[1]);
+  }
 
   // Mining State Info
   const eraMatch = line.match(/Era:\s+(\d+)/);
