@@ -72,7 +72,7 @@ function parseLine(rawLine) {
   if (batchMatch) currentStats.gpuBatch = parseInt(batchMatch[1]);
 
   // Miner Address
-  const addressMatch = line.match(/Miner address:\s+(0x[a-f0-9]+)/i);
+  const addressMatch = line.match(/(?:Miner address|Address):\s+(0x[a-f0-9]+)/i);
   if (addressMatch) currentStats.minerAddress = addressMatch[1];
 
   // Mining State Info
@@ -166,7 +166,8 @@ function startMiner() {
       if (line.trim()) {
         parseLine(line);
         // Log all lines if not mining yet, otherwise only important ones
-        if (currentStats.status !== 'Mining' || line.includes('⚡') || line.includes('SUCCESS') || line.includes('FOUND') || line.includes('address')) {
+        const lowerLine = line.toLowerCase();
+        if (currentStats.status !== 'Mining' || lowerLine.includes('⚡') || lowerLine.includes('success') || lowerLine.includes('found') || lowerLine.includes('address')) {
            console.log('[Miner]', line.trim().replace(/\r/g, ''));
         }
       }
