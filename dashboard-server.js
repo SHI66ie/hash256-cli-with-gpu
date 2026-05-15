@@ -133,8 +133,13 @@ function parseLine(rawLine) {
 }
 
 let minerOutputBuffer = '';
+let currentMinerProcess = null;
 
 function startMiner() {
+  if (currentMinerProcess) {
+    console.log('[Dashboard] Miner is already running.');
+    return currentMinerProcess;
+  }
   const minerPath = path.join(__dirname, 'target', 'release', 'hash-miner-rs.exe');
 
   console.log('[Dashboard] Starting miner...');
@@ -183,9 +188,20 @@ function startMiner() {
   miner.on('close', (code) => {
     console.log(`[Dashboard] Miner exited with code ${code}`);
     currentStats.status = 'Miner stopped';
+    currentMinerProcess = null;
   });
 
+  currentMinerProcess = miner;
   return miner;
+}
+
+function stopMiner() {
+  if (currentMinerProcess) {
+    console.log('[Dashboard] Stopping miner via UI...');
+    currentMinerProcess.kill('SIGINT');
+    currentMinerProcess = null;
+    currentStats.status = 'Miner stopped manually';
+  }
 }
 
 // HTML Dashboard
@@ -398,6 +414,13 @@ const dashboardHTML = `<!DOCTYPE html>
             margin-left: 10px;
         }
 
+        .controls { display: flex; gap: 10px; margin-left: auto; align-items: center; }
+        .btn { padding: 8px 16px; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; transition: all 0.2s; font-family: inherit; font-size: 0.85rem; }
+        .btn-start { background: var(--accent); color: #000; box-shadow: 0 0 10px var(--accent-glow); }
+        .btn-start:hover { transform: scale(1.05); box-shadow: 0 0 15px var(--accent); }
+        .btn-stop { background: rgba(255, 50, 50, 0.2); color: #ff5555; border: 1px solid rgba(255, 50, 50, 0.5); }
+        .btn-stop:hover { background: rgba(255, 50, 50, 0.4); transform: scale(1.05); }
+
         @media (max-width: 600px) {
             .header { flex-direction: column; align-items: flex-start; gap: 10px; }
             h1 { font-size: 1.8rem; }
@@ -411,7 +434,11 @@ const dashboardHTML = `<!DOCTYPE html>
                 <h1>HASH Miner</h1>
                 <p class="subtitle"><span class="pulse"></span> Live GPU Monitoring</p>
             </div>
-            <div class="tag">Mainnet v0.1.0</div>
+            <div class="controls">
+                <button id="btnStart" onclick="controlMiner('start')" class="btn btn-start">Start Miner</button>
+                <button id="btnStop" onclick="controlMiner('stop')" class="btn btn-stop">Stop Miner</button>
+            </div>
+            <div class="tag" style="margin-left: 15px;">Mainnet v0.1.0</div>
         </div>
 
         <div class="grid">
@@ -576,6 +603,16 @@ const dashboardHTML = `<!DOCTYPE html>
             }
         }
 
+        async function controlMiner(action) {
+            try {
+                await fetch('/api/control?action=' + action, { method: 'POST' });
+                document.getElementById('status').textContent = action === 'start' ? 'Starting...' : 'Stopping...';
+                setTimeout(fetchStats, 1000);
+            } catch (e) {
+                console.error('Failed to ' + action + ' miner:', e);
+            }
+        }
+
         fetchStats();
         setInterval(fetchStats, 2000);
     </script>
@@ -587,6 +624,21 @@ const server = http.createServer((req, res) => {
   if (req.url === '/api/stats') {
     res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
     res.end(JSON.stringify(currentStats));
+  } else if (req.url.startsWith('/api/control') && req.method === 'POST') {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const action = url.searchParams.get('action');
+    if (action === 'start') {
+      startMiner();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, message: 'Miner started' }));
+    } else if (action === 'stop') {
+      stopMiner();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, message: 'Miner stopped' }));
+    } else {
+      res.writeHead(400);
+      res.end('Invalid action');
+    }
   } else {
     res.writeHead(200, { 'Content-Type': 'text/html' });
     res.end(dashboardHTML);
@@ -599,12 +651,12 @@ server.listen(PORT, () => {
   console.log(`[Dashboard] Open http://localhost:${PORT} in your browser`);
 });
 
-// Start miner
-const miner = startMiner();
+// Start miner initially
+startMiner();
 
 // Graceful shutdown
 process.on('SIGINT', () => {
   console.log('\n[Dashboard] Shutting down...');
-  miner.kill('SIGINT');
+  stopMiner();
   server.close(() => process.exit(0));
 });
