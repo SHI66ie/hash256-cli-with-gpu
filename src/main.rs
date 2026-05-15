@@ -243,20 +243,7 @@ where
 {
     let contract = HashToken::new(HASH_CONTRACT_ADDRESS, provider.clone());
 
-    // --- Initial info via miningState() ---
-    match contract.miningState().call().await {
-        Ok(s) => {
-            println!("\n📋 Mining State:");
-            println!("   Era: {}", s.era);
-            println!("   Reward: {} (raw, 1e18)", s.reward);
-            println!("   Difficulty: {}", s.difficulty);
-            println!("   Mining minted: {} / {}", s.minted, s.minted + s.remaining);
-            println!("   Current epoch: {}", s.epoch);
-            println!("   Blocks left in epoch: {}", s.epochBlocksLeft);
-        }
-        Err(e) => eprintln!("⚠️  miningState() failed: {e}"),
-    }
-
+    // --- Verify Genesis ---
     match contract.genesisComplete().call().await {
         Ok(g) if !g._0 => {
             return Err(eyre!("Genesis is not complete yet — mining is closed."));
@@ -295,21 +282,28 @@ where
                 continue;
             }
         };
-        let epoch: u64 = block_num / EPOCH_BLOCKS;
-
-        let challenge = match contract.getChallenge(miner_address).call().await {
-            Ok(v) => v._0,
+        // --- Refresh Global State ---
+        let (difficulty, epoch) = match contract.miningState().call().await {
+            Ok(s) => {
+                println!("\n📋 Global Stats:");
+                println!("   Era: {}", s.era);
+                println!("   Reward: {} (raw, 1e18)", s.reward);
+                println!("   Difficulty: {}", s.difficulty);
+                println!("   Mining minted: {} / {}", s.minted, s.minted + s.remaining);
+                println!("   Blocks left in epoch: {}", s.epochBlocksLeft);
+                (s.difficulty, s.epoch.to::<u64>())
+            }
             Err(e) => {
-                eprintln!("❌ Challenge error: {e}");
+                eprintln!("❌ miningState error: {e}");
                 tokio::time::sleep(Duration::from_secs(5)).await;
                 continue;
             }
         };
 
-        let difficulty = match contract.currentDifficulty().call().await {
+        let challenge = match contract.getChallenge(miner_address).call().await {
             Ok(v) => v._0,
             Err(e) => {
-                eprintln!("❌ Difficulty error: {e}");
+                eprintln!("❌ Challenge error: {e}");
                 tokio::time::sleep(Duration::from_secs(5)).await;
                 continue;
             }
